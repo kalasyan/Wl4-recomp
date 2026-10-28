@@ -12,8 +12,11 @@ android {
         applicationId 'dev.wl4.android'
         minSdk 24
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        // CI sets these for each build of main (see .github/workflows/build.yml):
+        // the release tag without its "v", and the run number, so that every
+        // release installs over the one before it.
+        versionCode Integer.parseInt(System.getenv('WL4_VERSION_CODE') ?: '1')
+        versionName System.getenv('WL4_VERSION_NAME') ?: '0.1.0'
         resValue 'string', 'app_name', 'Wario Land 4'
 
         externalNativeBuild {

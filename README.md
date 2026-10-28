@@ -72,13 +72,18 @@ The USA and European releases are the same cartridge:
 
 ## 🚀 Installation (Android)
 
-Download `Wario_Land_4.apk` from the
+Download `Wario_Land_4-<version>.apk` from the
 **[latest release](https://github.com/kalasyan/wl4-recomp/releases/latest)**,
 install it and pick your ROM when you open it. ▶️
 
-Builds of every change to `main` are also in
+Every change to `main` is published as a new release, so you can also add
+`https://github.com/kalasyan/wl4-recomp` to
+[Obtainium](https://github.com/ImranR98/Obtainium) and get updates as they
+come out.
+
+The builds are also in
 **[Actions → build](https://github.com/kalasyan/wl4-recomp/actions/workflows/build.yml)**
-(the `wl4-android-apk` artifact of the latest run).
+(the `wl4-android-apk` artifact of each run).
 
 ## 🕹️ Controls
 

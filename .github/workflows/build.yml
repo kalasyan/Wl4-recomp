@@ -1,11 +1,13 @@
 name: build
 
+# Every push to main that builds publishes a release, v0.1.<run number>, with
+# the APK, so app stores that follow GitHub releases (Obtainium) see each
+# update. Pushing a v* tag (or running the workflow by hand with a release tag)
+# creates that release instead, a pre-release if the tag has a suffix such as
+# v1.0-beta.
 on:
   push:
     branches: [main]
-    # Pushing a v* tag (or running the workflow by hand with a release tag)
-    # creates the release, a pre-release if the tag has a suffix such as
-    # v1.0-beta, and attaches the APK.
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -74,6 +76,9 @@ jobs:
   android:
     name: Android APK
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.name }}
+      signed: ${{ steps.keystore.outputs.signed }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -81,15 +86,28 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v5
+      - name: Version
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.release || (github.ref_type == 'tag' && github.ref_name) || '' }}
+        run: |
+          name=${TAG#v}
+          [ -n "$name" ] || name=0.1.${{ github.run_number }}
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "WL4_VERSION_NAME=$name" >> "$GITHUB_ENV"
+          echo "WL4_VERSION_CODE=${{ github.run_number }}" >> "$GITHUB_ENV"
+          echo "version $name (${{ github.run_number }})"
       - name: Set up the release keystore
+        id: keystore
         # Optional: without these secrets the APK is signed with the runner's
-        # throwaway debug key.
+        # throwaway debug key, and no release is published from main.
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "ANDROID_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = release ] || [ "${{ github.ref_type }}" = tag ] || [ -n "${{ inputs.release }}" ]; then
             echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: the release APK is signed with a debug key"
           fi
@@ -131,15 +149,18 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Attach to the release
-    # Only the APK built above, never game data.
-    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || inputs.release != ''
+    name: Publish the release
+    # Only the APK built above, never game data. From main only when the APK is
+    # signed with the release key: Android refuses updates signed with another.
+    if: >-
+      github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || inputs.release != '' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.android.outputs.signed == 'true')
     needs: [linux, arm64, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     # A release made on the page with a new tag can also fire the tag push.
-    concurrency: release-${{ inputs.release || github.ref_name }}
+    concurrency: release-${{ needs.android.outputs.version }}
     steps:
       # Only for the release notes in docs/release-notes/<tag>.md, if there are any.
       - uses: actions/checkout@v5
@@ -152,7 +173,8 @@ jobs:
       - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name || inputs.release || github.ref_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.release || format('v{0}', needs.android.outputs.version) }}
+          VERSION: ${{ needs.android.outputs.version }}
         run: |
           notes="src/docs/release-notes/$TAG.md"
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
@@ -163,6 +185,6 @@ jobs:
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$notes"
           fi
           mkdir dist
-          cp "$(find artifacts -name '*.apk' | head -1)" dist/Wario_Land_4.apk
+          cp "$(find artifacts -name '*.apk' | head -1)" "dist/Wario_Land_4-$VERSION.apk"
           ls -l dist
           gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
