@@ -2,8 +2,6 @@
   <img src="docs/images/logo.png" alt="Wario Land 4 Recomp logo" width="80%">
 </p>
 
-<h1 align="center">wl4-recomp</h1>
-
 <p align="center">
   <b>Wario Land 4, running natively on Android and Linux.</b><br>
   No emulator: the game's own C code, compiled for your device, with save states, touch controls and rumble.
