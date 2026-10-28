@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -166,10 +167,13 @@ static void InstallHandlers(void)
 void PortOsInstallFaultHandler(PortFaultCallback callback) { sFault = callback; InstallHandlers(); }
 void PortOsRedirectFaults(PortRedirectCallback redirect) { sRedirect = redirect; InstallHandlers(); }
 
+// The syscall itself: Android's libc only has memfd_create() from API 30 on.
+static int MemfdCreate(const char *name) { return (int)syscall(SYS_memfd_create, name, MFD_CLOEXEC); }
+
 int PortOsMapTrappedRegion(uintptr_t address, size_t reserve, size_t size, uint8_t **hostView,
                            PortTrapCallback before, PortTrapCallback after)
 {
-    int fd = memfd_create("wl4-io", MFD_CLOEXEC);
+    int fd = MemfdCreate("wl4-io");
     void *game, *host;
     if (fd < 0) return -1;
     if (ftruncate(fd, (off_t)reserve)) { close(fd); return -1; }

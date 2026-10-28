@@ -808,7 +808,7 @@ void Port_HostRumble(float low, float high, float pulse, int pulseMs)
 
 // ---- second screen ------------------------------------------------------------
 // PC: a second window (on the second monitor if there is one), clicked with the
-// mouse. Android: the Java side (Fe8Activity) shows it on the secondary display
+// mouse. Android: the Java side (Wl4Activity) shows it on the secondary display
 // as a Presentation, pulls the pixels and sends the touches through JNI; on a
 // device with one screen it does nothing. The picture is drawn and the touches
 // are handled on the game thread, between two frames.
