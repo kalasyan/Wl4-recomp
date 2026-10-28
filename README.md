@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.jpg" alt="Wario Land 4 Recomp logo" width="80%">
+</p>
+
 <h1 align="center">wl4-recomp</h1>
 
 <p align="center">
