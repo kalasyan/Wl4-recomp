@@ -1,0 +1,319 @@
+# How the port works
+
+Wario Land 4 is not emulated here. The decompiled game code in `src/` is compiled for the
+target with `PORTABLE` defined, and runs on a model of the GBA hardware in `port/src`:
+the memory map at the GBA's own addresses, the I/O registers, DMA, interrupts, the BIOS
+calls, the picture (a software PPU) and the sound. The game reads its graphics, music and
+text from the player's ROM, mapped at `0x08000000` as on the cartridge.
+
+The native port this one starts from is
+[BioRhythmicStudios/warioland4](https://github.com/BioRhythmicStudios/warioland4)
+(`linux-port`), which converted the game code to 64 bits and wrote the runtime. This
+project adds AArch64 and Android, and the frontend of its sister projects
+([metroid-zm-recomp](https://github.com/kalasyan/metroid-zm-recomp),
+[metroid-fs-recomp](https://github.com/kalasyan/metroid-fs-recomp),
+[fire-emblem-ss-recomp](https://github.com/kalasyan/fire-emblem-ss-recomp)).
+
+The GBA ROM is still built with `make`, and the port must not change it: every change to
+shared code is checked by rebuilding the ROM and comparing it with the previous build.
+
+## Frontend
+
+`port/frontend` is the game with its window: SDL3 for video, sound and input, and a Dear
+ImGui menu (Esc, F1 or the Android back button) with quick saves, button mapping, video
+and sound options, the touch gamepad and rumble.
+
+- `core.c` runs the game a frame at a time on the runtime (`PortFrameRun()`), hands the
+  picture, sound and rumble to the host, writes the SRAM save 30 frames after the game
+  stops changing it, and takes save states.
+- `host_sdl.c` is the host: window, renderer, audio stream, keyboard, gamepads, touch,
+  frame pacing (`pacing.c`) and the files, in SDL's preference directory
+  (`SDL_GetPrefPath("wl4-recomp", "wl4")`): `settings.ini`, `wl4.sav`,
+  `state_N.wl4state` and `rom.gba`, the copy of the ROM the player picked.
+- `rumble.c` turns what happens to Wario (`port/src/rumble_snapshot.c`) into gamepad
+  rumble and phone vibration.
+- `host_test.c` builds `wl4_core_test`, the same core with no window, which prints a hash
+  of each frame. `--save-at F --load-at G` checks that the frames after loading a state
+  repeat those after saving it.
+
+### Save states
+
+A save state holds the GBA memory (EWRAM, IWRAM, palette, VRAM, OAM, SRAM), the I/O page
+as the host sees it, the port's own state and the RAM function table. The port's statics
+that belong in a state (the frame loop, DMA, PPU and sound) are tagged `PORT_STATE`
+(`port/include/port/state.h`), which puts them in the `wl4_state` section, saved whole.
+
+The game runs as a coroutine on its own stack, which a state cannot hold. So states are
+only taken and loaded while the game waits for VBlank at the end of its main loop
+(`AgbMain`), the one point where that stack is always the same. Cutscenes that wait for
+VBlank elsewhere refuse quick saves, and a hotkey pressed then waits for the next allowed
+frame.
+
+## AArch64 and Android
+
+The game stores pointers in 32-bit fields, as on the GBA, so its data symbols sit at their
+GBA addresses and its code must sit below 4 GiB.
+
+- **Linux** executables are linked at `0x40000000` (`-no-pie -Wl,-Ttext-segment`).
+- **Android** loads libraries wherever it likes, so the app's `libmain.so` is only a
+  launcher (`port/frontend/android_launcher.c`): it reserves address space below 4 GiB and
+  loads the game, `libgame.so`, there with `android_dlopen_ext`. The absolute symbols at
+  GBA addresses are made `.hidden` in that build, so the code reaches them PC-relative
+  (`adrp`), with no dynamic relocations.
+
+On x86-64 a trapped I/O access runs the instruction with the trap flag set (see Runtime
+below). AArch64 has no single-step for user code, so `port/src/os_linux_arm64.c` decodes
+the faulting load or store (`port/src/arm64_access.c`: `LDR`/`STR` in all their forms,
+pairs, SIMD registers up to 128 bits, acquire/release) and performs it on the host view of
+the page itself, between the before and after callbacks, then moves the PC on. Redirected
+faults (mirrors, the BIOS and unused addresses) are emulated the same way at the
+redirected address. With SVE, the kernel saves the vector registers in an SVE record,
+which the handler reads and writes instead of the FP/SIMD one.
+
+`wl4_headless --test-arm64` checks every form against the same access done natively; CI
+runs it under `qemu-aarch64`, with and without SVE. To build and test for AArch64 on an
+x86-64 Linux machine (`clang gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-static`):
+
+```sh
+cmake -B build-arm64 -G Ninja --toolchain port/cmake/linux-aarch64-cross.cmake -DWL4_FRONTEND=OFF
+cmake --build build-arm64 --target wl4_headless
+qemu-aarch64-static -L /usr/aarch64-linux-gnu build-arm64/wl4_headless --test-arm64
+qemu-aarch64-static -L /usr/aarch64-linux-gnu build-arm64/wl4_headless ROM.gba --frames 3000 --shots arm64.shots
+```
+
+The x86-64 and AArch64 builds give the same frames.
+
+## How game code builds for PC
+
+- `PIN()` and the `COMPILER_BARRIER*()` macros only steer agbcc, and are empty. `ASM_BARRIER()`
+  stays an empty asm statement, because some barriers carry a value: `ASM_BARRIER(: "=r"(x) : "0"(y))`
+  sets x to y. `ASM_BARRIER_ARM()`, for the ones that name ARM registers, is empty.
+- `SYSCALL()` calls `PlatformSyscall()` instead of the BIOS (`port/src/bios.c`).
+- Data defined in `src/` sits in `#ifndef PORTABLE` blocks with `extern` declarations in
+  the `#else` branch. The port places each symbol at its GBA address. Only tables of
+  function pointers are defined natively. The ROM data in `src/data/` is not compiled,
+  except the three function pointer tables there.
+- agbcc aligns every struct and union to 4 bytes. Every definition carries `AGB_ALIGN`,
+  which gives the PC build the same alignment.
+- `port/generated/layout_asserts_*.c` checks agbcc's size and field offsets for every
+  struct and union in `include/`. Structs that hold pointers are checked only with
+  `PORT_CHECK_POINTER_LAYOUTS`, until the GbaPtr conversion.
+
+The rewrites are done by scripts. Run them again after merging new matches, and use
+`--check` to list anything left:
+
+| Script | Rewrites |
+| --- | --- |
+| `tools/port_pin_codemod.py` | `register ... asm("rN")` → `PIN("rN")` |
+| `tools/port_asm_barrier_codemod.py` | empty-template `asm` → `ASM_BARRIER()` |
+| `tools/port_data_codemod.py` | data definitions in `src/` → `#ifndef PORTABLE` blocks |
+| `tools/port_struct_align_codemod.py` | `struct Foo {` → `struct AGB_ALIGN Foo {` |
+
+## Links to the GBA symbol table
+
+`port/tools/gen_symbols.py` reads the GBA symbol table and the PC build of the game code,
+and writes three files to `port/generated/`:
+
+- `gba_symbols.s` defines every data symbol as an absolute symbol at its GBA address,
+  together with the linker constants (`gNumMusicPlayers`, `gMaxLines`). Clang reaches
+  extern data through 64-bit `.refptr` slots, so the executable can load at any address.
+- `gba_functions.c` is the dispatch table from each function's GBA address to the native
+  function (`PortLookupGbaFunction()`), for function pointers read from GBA memory.
+- `gba_stubs.c` holds weak stubs for GBA functions that are still asm. Each one reports
+  its name and address and stops. A platform definition with the same name replaces it.
+
+The symbol table must keep every symbol at its base-ROM address, which `build/us` does not
+(the unmatched functions move what follows them). Build the playtest ELF under WSL, then
+generate from Windows after `cmake --build`:
+
+    make -k; python3 tools/build_playtest_rom.py        (WSL; needs expected/us/obj)
+    python port/tools/gen_symbols.py --elf build/playtest/warioland4_us_playtest.elf ^
+        --lib build_pc/libwl4_game.a --nm C:/path/to/llvm-mingw/bin/llvm-nm.exe
+    python port/tools/gen_lz77_sources.py               (the LZ77 streams for --test-bios)
+
+`port/tools/gen_layout_asserts.py` regenerates the layout checks. It runs under WSL,
+because it needs agbcc and libclang (`pip install libclang`).
+
+## Runtime
+
+`wl4_headless [ROM] --frames N [--dump FILE] [--shots FILE] [--wav FILE] [--from-step S] [--input FILE] [--save FILE] [--mgba-colors] [--selftest] [--test-bios] [--test-io] [--test-arm64] [--fault rom-write|unmapped|stack-overflow] [--asan-probe]`
+
+`wl4_headless` runs the game without a window, for tests and comparisons with mGBA; the
+game with its window is `wl4` (see [Frontend](#frontend)). Frames are paced at the GBA's
+rate, 2^24 Hz / 280896 cycles (about 59.73 a second). If the game faults, the report goes
+to stderr (on Android, to logcat under the tag `wl4`).
+
+`port/src/save.c` keeps the cartridge's 32 KiB of SRAM in mGBA-compatible `.sav` format.
+Headless runs save only with `--save`. Give tests disposable copies. After 30 stable frames the port writes an exclusive
+temporary sibling, flushes/closes it and atomically replaces the destination. Failed writes
+keep the last good file and latest SRAM in memory, then retry after at least 300 game frames
+once SRAM is stable. Headless final-save failure exits 1. Unreadable saves and
+files not exactly 32768 bytes are rejected without opening a writable session. Independent
+concurrent writers are not coordinated.
+
+`--test-save DIRECTORY` runs disposable filesystem failure/recovery tests in a new child of
+the specified existing directory. Use a directory under `build/`; test files remain as evidence.
+The test never uses the default AppData save.
+
+At startup, `port/src/gba_memory.c` reserves the GBA regions at their real addresses
+(`port/include/port/gba_memory.h`). It also reserves the game stack at `0x01020000`–`0x01810000`,
+with a guard page, 60 KiB of headroom and inaccessible blocks around it. A fault handler (a vectored exception handler on Windows, SIGSEGV on Linux and Android) reports faults on GBA addresses (for example a write to the read-only
+ROM) and overflows of the game stack. `port/src/rom.c` loads the ROM (default
+`baserom_us.gba`), checks its size and MD5, and makes it read-only. The game runs as a
+minicoro coroutine on the low stack (`port/src/game_thread.c`).
+
+The game sometimes reads through a pointer it has not set yet, as the GBA lets it: on the
+first frame of the passage map after leaving a stage, `DrawMapScreenSprites` reads animation
+tables from address 0, then a sprite count through the pointer it found there. The GBA reads
+its BIOS's open bus there, the last opcode the BIOS fetched (`0xE3A02004` after the SWI the
+game waits for VBlank with), then the open bus of an unused address. So does the port. Before
+the reporting handler, a second one redirects faults on 32-bit addresses as
+`port/src/gba_memory.c` says. Reads from the BIOS and unused addresses see `0xE3A02004`, and
+writes there are dropped. The mirrors of EWRAM, IWRAM, palette RAM, VRAM and OAM go to that
+memory. `port/src/x86_access.c` finds the register the faulting instruction takes its address
+from. The handler moves it by the difference, runs the instruction with the trap flag set,
+and moves it back. Only loads, stores, arithmetic and compares are redirected, and only when
+that register serves just as the address. Anything else, and faults on the cartridge (such as
+a write to the ROM), are reported as before. On the GBA an unused address returns the CPU's
+prefetch, an opcode near the reading instruction, which the port cannot know. In the one case
+seen, the count it gives is too large and the game draws nothing, as with mGBA's value.
+
+`port/src/bios.c` runs the BIOS calls the game makes:
+- `CPUSet` and `LZ77UnCompVram` follow the hardware, including LZ77's halfword writes,
+  which read stale data for a back-reference at distance 1.
+- `Halt` yields from the game coroutine until the frame loop requests an interrupt.
+- Any other call is reported and stops the game.
+
+`port/src/gba_runtime.c` has the libgcc division helpers and m4a's `umul3232H32`.
+`port/src/m4a_native.c` is the m4a sound engine's asm (`asm/m4a_asm.s`) in C: `SoundMain` and its
+mixer, `MPlayMain`, `ply_note` and the other `ply_` commands. Each routine follows the asm step
+by step, quirks included, so the channels, tracks and PCM buffer in GBA RAM come out as on the
+GBA. The engine reads song data through a guard that makes BIOS addresses read as 0; the port
+checks first, since it cannot read there at all. `MPlayMain` and `ply_note` take the arguments
+the asm passes them, so `include/gba/m4a.h` declares them that way for the PC.
+
+`port/src/audio.c` is the sound hardware, written from GBATEK's description:
+- **PSG.** The two square channels (the first with its sweep), the wave channel with its two
+  banks of wave RAM, and the noise channel. Each has its length counter and envelope, clocked
+  by a 512 Hz frame sequencer.
+- **Direct Sound.** FIFOs A and B play a byte on each overflow of their timer, and ask DMA 1
+  or 2 for 4 more words when 4 or fewer are left. The DMA reads the PCM buffer that
+  `SoundMain` mixes.
+- **Mixing.** As SOUNDCNT and SOUNDBIAS set it, into the 10-bit DAC around the bias level.
+  The PSG's balance against Direct Sound is mGBA's. The output is 65536 Hz, SOUNDBIAS's
+  8-bit rate, which the game sets, and a filter blocks DC as the GBA's output capacitor does.
+
+The game reaches the I/O registers through the `REG_` macros, structs, and addresses it
+computes at run time. So instead of changing the game code, the port traps every access
+to the register page:
+- The page is a section with two views. The game's view at `0x04000000` has no access rights.
+  The host reads and writes the other view (`PortIoHost()`) freely.
+- A fault there calls `port/src/gba_io.c` before the access. The page is then opened, and the
+  one instruction runs with the trap flag set. The single-step exception that follows applies
+  the register's effects and closes the page.
+- The effects:
+  - **DMA.** A write that sets a channel's enable bit latches its registers. Immediate
+    transfers run at once and clear the bit. VBlank and HBlank transfers run from
+    `PortIoVBlank()`/`PortIoHBlank()`, with repeat and destination reload.
+  - **IF.** Writing 1 to a bit clears it.
+  - **VCOUNT and DISPSTAT.** These advance by half a line per read, so loops that wait for
+    a scanline end. The host sets the line with `PortIoSetScanline()`.
+  - **Read-only registers.** Writes to them are undone. Write-only bits read as 0.
+  - **Sound.** The bytes a store wrote to the sound registers, wave RAM or FIFOs go to
+    `port/src/audio.c`, in order. `port/src/x86_access.c` reads the store's size from the
+    instruction, because a write-only bit may be written with the 0 it reads as. The
+    registers then read as mGBA keeps them: write-only bits as 0, SOUNDCNT_X with the
+    channels that are playing, and wave RAM with the bank that is not playing. As the
+    display moves on, so does the sound hardware, a scanline at a time.
+- A trapped access costs about 4 µs.
+
+`--frames N` runs the game headless for N frames (`port/src/frame.c`):
+- The game runs until it halts, as it does once a frame while it waits for VBlank.
+- While it is halted, the host moves the display on one HBlank or line at a time: it runs
+  timed DMA and raises the interrupts that DISPSTAT enables.
+- When IE enables a requested interrupt, the game resumes. Halt then runs a native copy of
+  `irq_handler`, which calls the game's callbacks.
+- Game code takes no time. A scene setup that takes the GBA several frames finishes in one.
+
+`port/src/ppu.c` draws each visible line at the start of its HBlank, before the HBlank DMA
+transfers, as the hardware does. It reads the registers, VRAM, palette RAM and OAM where
+the game left them. It covers modes 0-5, text, affine and bitmap backgrounds, regular and
+affine sprites, the windows (including the OBJ window), blending, brightness and mosaic.
+Where the hardware is unclear, it does what mGBA 0.10.5's software renderer does: the delay
+before a background turned on mid-frame appears, the sprite cycle budget, the OBJ priority
+quirk, and how semi-transparent sprites and brightness combine. The I/O traps report
+writes to the affine reference points (`PortIoTakeAffineWrites()`), even with the same
+value, because each write restarts the display's internal reference point.
+
+Colours are blended on 5-bit channels, as on the GBA. mGBA blends 8-bit channels and rounds
+differently. `--mgba-colors` blends as mGBA does, so its screenshots can be compared
+exactly.
+
+`--dump FILE` writes GBA memory (EWRAM, IWRAM, I/O, palette, VRAM, OAM, SRAM) at the start of
+every VBlank. `--shots FILE` writes the picture then, as 240x160 RGB bytes after a header.
+`--wav FILE` writes the sound, 16-bit stereo at 65536 Hz.
+`--from-step S` starts all three at the frame on which main-loop step S finishes, to look at a
+late scene without gigabytes of dump (each frame is 419 KiB).
+`--input FILE` presses keys from a script, by steps of the game's main loop rather than by
+frames, so that mGBA can press the same keys on the same steps. Each line is `STEP KEYS`: from
+that step on, the game reads those keys (`START`, `A+RIGHT`, or `-` for none). The format is
+in `port/include/port/input_script.h`. This one goes from the title to file select
+(`port/tools/inputs/file_select.keys` also moves the cursor there):
+
+    500 START   # skip the intro
+    501 -
+    700 START   # at the title
+    701 -
+
+To compare a run with mGBA (0.10 or later, the Qt build):
+1. Run `wl4_headless --frames N --dump PORT.bin`.
+2. Make the same dump in mGBA. `port/tools/run_mgba_dump.ps1` does it unattended:
+
+       powershell -ExecutionPolicy Bypass -File port/tools/run_mgba_dump.ps1 ^
+           -Mgba C:\path\to\mGBA.exe -Frames N -Out MGBA.bin [-Shots] [-InputScript FILE] [-FromStep S] [-Save FILE]
+
+   It copies the ROM into a new run directory under `%TEMP%` and starts mGBA. It loads
+   `port/tools/mgba_dump.lua` through the Scripting window and closes mGBA once the dump is
+   written. `-Shots` also saves a screenshot of every frame in the run directory
+   (`wl4-N.png` goes with the N-th frame dumped, from 0). `-InputScript` presses keys as
+   `wl4_headless --input` does, and `-FromStep` starts the dump as `wl4_headless --from-step` does. `-Save`
+   boots with a save file, for comparing with `wl4_headless --save` (give wl4_headless a copy: it writes it).
+   `Get-Help port/tools/run_mgba_dump.ps1 -Full` has the details.
+
+   To do it by hand, load the ROM and choose Tools > Scripting... > File > Load script...,
+   then pick `port/tools/mgba_dump.lua`. The script erases SRAM (or loads `%WL4_SAVE%` into
+   it), resets the game and writes the dump to `%WL4_DUMP%` (default `%TEMP%\wl4_mgba.bin`).
+   `%WL4_FRAMES%` sets the frame count, `WL4_SHOTS=1` turns the screenshots on, `%WL4_INPUT%`
+   names an input script and `%WL4_FROM_STEP%` sets the first step to dump. It writes `MGBA.bin.done` when finished.
+3. Run `python port/tools/diff_frames.py PORT.bin MGBA.bin`.
+4. To compare the pictures, run wl4_headless with `--shots PORT.shots --mgba-colors` and mGBA with
+   `-Shots`, then `python port/tools/diff_screens.py PORT.bin PORT.shots MGBA.bin RUN_DIR`.
+   `RUN_DIR` is the run directory that the mGBA script prints. `--save DIR` writes the
+   differing frames side by side as PNGs.
+
+The diff runners compare one frame for each step of the game's main loop: the first on which
+the step has finished (`gMainTimer` changed, and the loop waits for VBlank with bit 0 of
+`gInterruptCheck` clear). Boot time does not matter, nor do the frames on which mGBA is still
+running a step that takes the port no time. The input scripts count steps the same way. The
+memory diff masks state the port does not model, each mask with its reason: stacks,
+VCOUNT/DISPSTAT status, timers, write-only DMA and FIFO registers, and the open bus that rooms
+without a raster effect copy as their HBlank callback (the last value any DMA moved, on mGBA
+usually sound data).
+
+The sound engine's state is compared too, and matches until the first frame mGBA lags: a step
+that takes the GBA more than a frame. Where the game runs `SoundMain` from its VBlank callback
+(the intro, the title, file select, the level transitions), a lag frame is an extra music tick
+and moves `pcmDmaCounter` on; the port, whose steps take no time, has neither. From there the
+music runs ahead on mGBA. `--mask-sound` leaves the sound engine's state and the sound registers
+out, to compare the rest.
+
+`--selftest` runs the coroutine through yields and 2 MiB of recursion. `--test-bios` runs
+the BIOS unit tests (`port/src/bios_test.c`). These include decoding every LZ77 stream the
+game passes to `LZ77UnCompVram`, and comparing the result with a plain byte decoder, and
+reads and writes of the BIOS, unused addresses and mirrors by several kinds of instruction.
+`--test-io` tests the trapped registers on the game coroutine, and times the traps. It covers
+the sound registers too: their masks, a square wave's pitch, length counters, the wave RAM
+banks, and a FIFO fed by DMA. `--fault` and
+`--asan-probe` trigger the fault reports and an AddressSanitizer report on the game stack.
+To build with AddressSanitizer, configure with `-DWL4_ASAN=ON`. Then put
+`llvm-mingw/x86_64-w64-mingw32/bin` on `PATH` for `libclang_rt.asan_dynamic-x86_64.dll`.
