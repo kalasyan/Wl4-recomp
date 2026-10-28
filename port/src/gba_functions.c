@@ -79,6 +79,32 @@ void PortSetRamFunction(unsigned int gbaAddress, PortFunc func)
     sRamFunctions[i].func = func;
 }
 
+unsigned int PortRamFunctionsSave(uint32_t *out)
+{
+    unsigned int i;
+
+    for (i = 0; i < sRamFunctionCount; i++) {
+        out[i * 2] = sRamFunctions[i].gbaAddress;
+        out[i * 2 + 1] = sRamFunctions[i].func ? PortNativeFunctionToGba(sRamFunctions[i].func) : 0;
+    }
+    return sRamFunctionCount;
+}
+
+int PortRamFunctionsLoad(const uint32_t *in, unsigned int count)
+{
+    unsigned int i;
+
+    if (count > MAX_RAM_FUNCTIONS)
+        return -1;
+    for (i = 0; i < count; i++)
+        if (in[i * 2 + 1] != 0 && IsGbaRam(in[i * 2 + 1]))
+            return -1;
+    sRamFunctionCount = 0;
+    for (i = 0; i < count; i++)
+        PortSetRamFunction(in[i * 2], in[i * 2 + 1] ? PortLookupGbaFunction(in[i * 2 + 1]) : NULL);
+    return 0;
+}
+
 // The entry for code copied to a RAM address, or -1. Its function is NULL when what was copied
 // is not a function (open bus, say).
 static int RamFunction(unsigned int gbaAddress)

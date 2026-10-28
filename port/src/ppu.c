@@ -1,4 +1,5 @@
 #include "port/ppu.h"
+#include "port/state.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -98,9 +99,9 @@ struct Background {
 };
 
 static enum PortPpuColors sColors;
-static struct Background sBg[4];
-static uint16_t sDispcnt;  // as last seen, to act on changes
-static uint32_t sFrame[HEIGHT * WIDTH];
+static PORT_STATE struct Background sBg[4];
+static PORT_STATE uint16_t sDispcnt;  // as last seen, to act on changes
+static PORT_STATE uint32_t sFrame[HEIGHT * WIDTH];
 
 // One line's layers. Background and sprite pixels are BGR555 colours with OPAQUE set, or 0.
 #define OPAQUE 0x8000

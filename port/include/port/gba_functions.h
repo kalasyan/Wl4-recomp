@@ -45,4 +45,11 @@ void PortSetRamFunction(unsigned int gbaAddress, PortFunc func);
 // Reports a native address stored in GBA memory that does not fit 32 bits, and stops.
 __attribute__((noreturn)) void PortBadGbaPointer(unsigned long long address);
 
+// Save states: the functions copied to RAM, as pairs of GBA addresses (the RAM copy, and the
+// game function it runs or 0), at most PORT_MAX_RAM_FUNCTIONS. Load returns nonzero for a
+// list it cannot take.
+#define PORT_MAX_RAM_FUNCTIONS 8
+unsigned int PortRamFunctionsSave(uint32_t *out);
+int PortRamFunctionsLoad(const uint32_t *in, unsigned int count);
+
 #endif  // GUARD_PORT_GBA_FUNCTIONS_H

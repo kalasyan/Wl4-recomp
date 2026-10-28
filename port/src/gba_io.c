@@ -1,4 +1,5 @@
 #include "port/gba_io.h"
+#include "port/state.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -62,15 +63,15 @@
 
 static uint8_t *sIo;
 static uint8_t sBefore[PORT_IO_SIZE];  // the registers before the trapped instruction ran
-static unsigned int sLine;
-static int sInHBlank;
+static PORT_STATE unsigned int sLine;
+static PORT_STATE int sInHBlank;
 static uint64_t sTraps;
 static uintptr_t sTrapPc;  // the game instruction being trapped
 static void (*sHBlankHandler)(unsigned int line);
 
 // The affine reference point registers: BG2X, BG2Y, BG3X and BG3Y, 32 bits each.
 static const unsigned int kAffineReferences[4] = { 0x028, 0x02C, 0x038, 0x03C };
-static unsigned int sAffineWrites;
+static PORT_STATE unsigned int sAffineWrites;
 
 struct DmaChannel {
     int active;
@@ -78,9 +79,9 @@ struct DmaChannel {
     uint16_t control;
     int fifo;  // the sound FIFO it was started for, or -1
 };
-static struct DmaChannel sDma[4];
+static PORT_STATE struct DmaChannel sDma[4];
 // The last value a DMA moved, which a DMA with no valid source writes instead (open bus).
-static uint32_t sDmaLatch;
+static PORT_STATE uint32_t sDmaLatch;
 
 uint8_t *PortIoHost(void)
 {

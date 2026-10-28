@@ -16,25 +16,24 @@
 #include "port/ppu.h"
 #include "port/rom.h"
 #include "port/save.h"
-#include "port/sdl_frontend.h"
 
 extern int PortTileWrapTest(void);
 
 static void Usage(void)
 {
     fprintf(stderr,
-            "usage: wl4 [ROM] [--scale N] [--frames N [--dump FILE] [--shots FILE] [--wav FILE] [--from-step S]]\n"
+            "usage: wl4_headless [ROM] --frames N [--dump FILE] [--shots FILE] [--wav FILE] [--from-step S]\n"
             "           [--input FILE] [--save FILE] [--mgba-colors] [--selftest] [--test-bios] [--test-io]\n"
             "           [--fault rom-write|unmapped|stack-overflow] [--asan-probe] [--test-save DIRECTORY]\n"
             "  ROM defaults to baserom_us.gba in the current directory.\n"
-            "  With no --frames or tests, the game runs in a window, --scale times 240x160 (saved scale, or default 3).\n"
+            "  The window is the wl4 executable (port/frontend); this one runs the game headless and tests.\n"
             "  --frames N runs the game headless for N frames; --dump writes GBA memory after each,\n"
             "  --shots the picture and --wav the sound, from the frame on which main-loop step S\n"
             "  finishes with --from-step.\n"
-            "  --input presses keys from a script (port/include/port/input_script.h),\n"
-            "  in the window as well. --mgba-colors blends colours as mGBA does, to compare with it.\n"
-            "  --save keeps SRAM in FILE (an mGBA .sav). The window defaults to wl4.sav in the\n"
-            "  user's application data (%%APPDATA%%\\wl4); headless runs save only with --save.\n");
+            "  --input presses keys from a script (port/include/port/input_script.h).\n"
+            "  --mgba-colors blends colours as mGBA does, to compare with it.\n"
+            "  --save keeps SRAM in FILE (an mGBA .sav).\n"
+            "  --test-arm64 checks the AArch64 load/store emulation (alone).\n");
 }
 
 // --- Self-test of the game coroutine -------------------------------------------------------
@@ -298,7 +297,7 @@ int main(int argc, char **argv)
     const char *dumpPath = NULL, *shotsPath = NULL, *wavPath = NULL, *inputPath = NULL;
     const char *savePath = NULL;
     enum PortPpuColors colors = PORT_PPU_COLORS_GBA;
-    unsigned int frames = 0, scale = 0, fromStep = 0;
+    unsigned int frames = 0, fromStep = 0;
     const char *saveTest = NULL;
     int selfTest = 0, biosTest = 0, ioTest = 0, asanProbe = 0, tileWrapTest = 0, creditsTest = 0;
     int i;
@@ -343,10 +342,6 @@ int main(int argc, char **argv)
             savePath = argv[++i];
         else if (strcmp(argv[i], "--mgba-colors") == 0)
             colors = PORT_PPU_COLORS_MGBA;
-        else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
-            scale = (unsigned int)strtoul(argv[++i], NULL, 10);
-            if (scale < 1) scale = 1;
-        }
         else if (strcmp(argv[i], "--fault") == 0 && i + 1 < argc)
             sFault = argv[++i];
         else if (argv[i][0] == '-') {
@@ -387,14 +382,6 @@ int main(int argc, char **argv)
     }
     if (selfTest || biosTest || ioTest || saveTest)
         return 0;
-#ifdef WL4_HAVE_SDL
-    if (inputPath != NULL && PortInputScriptLoad(inputPath))
-        return 1;
-    PortPpuReset(colors);
-    PortOsShowErrors(1);
-    return PortSdlRun(GameEntry, scale, inputPath != NULL, savePath);
-#else
-    fprintf(stderr, "This build has no window (it was built without SDL3); use --frames to run headless.\n");
+    Usage();
     return 2;
-#endif
 }

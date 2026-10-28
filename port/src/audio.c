@@ -1,4 +1,5 @@
 #include "port/audio.h"
+#include "port/state.h"
 
 #include <string.h>
 
@@ -62,7 +63,7 @@ struct Fifo {
     int8_t sample;
 };
 
-static struct {
+static PORT_STATE struct {
     int enabled;  // SOUNDCNT_X bit 7
     struct Square square[2];
     struct {

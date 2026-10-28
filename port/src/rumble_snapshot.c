@@ -4,9 +4,10 @@
 #include "global_data.h"
 #include "sprite.h"
 #include "port/rumble_snapshot.h"
-static int sRock, sBoss, sBossValid, sBossHealth, sBossKey;
-static unsigned sEvents;
-static int sContactAttack, sContactPose, sContactHead;
+#include "port/state.h"
+static PORT_STATE int sRock, sBoss, sBossValid, sBossHealth, sBossKey;
+static PORT_STATE unsigned sEvents;
+static PORT_STATE int sContactAttack, sContactPose, sContactHead;
 void PortRumbleImpact(unsigned events) { sEvents |= events; }
 void PortRumbleContactBegin(int slot)
 {
@@ -49,7 +50,7 @@ void PortRumbleTileBroken(void)
     else if (gWarioData.reaction == REACTION_NORMAL && gWarioData.yVelocity > 0)
         sEvents |= PORT_RUMBLE_HEAD;
 }
-static int sFormValid, sForm, sPose, sFormRoom, sRecoveryAnnounced;
+static PORT_STATE int sFormValid, sForm, sPose, sFormRoom, sRecoveryAnnounced;
 static int Form(int reaction, int pose)
 {
     if (reaction >= REACTION_FLAMING && reaction < REACTION_COUNT) return reaction;

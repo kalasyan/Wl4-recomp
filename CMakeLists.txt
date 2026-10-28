@@ -1,6 +1,7 @@
-# PC port build. The GBA ROM is still built with make; see port/README.md.
-cmake_minimum_required(VERSION 3.20)
-project(warioland4_pc C ASM)
+# Native build: Linux, Android (from android/, through Gradle) and Windows (headless only).
+# The GBA ROM is still built with make. See docs/PORT.md.
+cmake_minimum_required(VERSION 3.22)
+project(wl4_recomp C ASM)
 
 option(WL4_CAST_WARNINGS "Show the pointer/integer cast warnings (the GbaPtr worklist)" OFF)
 option(WL4_ASAN "Build with AddressSanitizer" OFF)
@@ -10,17 +11,36 @@ if(WL4_ASAN)
     add_link_options(-fsanitize=address)
 endif()
 
+set(WL4_IMAGE_BASE "0x10000000" CACHE STRING "Android: preferred load address of libgame.so (below 4 GiB)")
+set(WL4_SDL3_TAG "release-3.4.18" CACHE STRING "SDL3 version fetched when no SDL3 is installed")
+set(WL4_IMGUI_TAG "v1.92.9b" CACHE STRING "Dear ImGui version (options menu)")
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm64-v8a)$")
+    set(WL4_ARM64 ON)
+endif()
+
+if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "The port requires Clang (-fms-volatile keeps DMA ordering)")
+endif()
+
 if(WIN32)
     set(WL4_OS_SOURCE port/src/os_win32.c)
     set(WL4_SAVE_TEST_SOURCE port/src/save_test.c)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
-        message(FATAL_ERROR "The Linux port currently requires Clang for -fms-volatile DMA ordering")
-    endif()
-    add_library(wl4_posix_files STATIC port/src/os_file_posix.c)
-    target_include_directories(wl4_posix_files PUBLIC port/include)
-    set(WL4_OS_SOURCE port/src/os_linux.c)
+elseif(ANDROID)
+    # Everything goes in libgame.so, which the launcher (port/frontend/android_launcher.c)
+    # loads below 4 GiB: code reaches the game's data, absolute symbols at GBA addresses,
+    # PC-relative.
+    set(WL4_OS_SOURCE $<IF:$<BOOL:${WL4_ARM64}>,port/src/os_linux_arm64.c,port/src/os_linux.c>)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(WL4_SAVE_TEST_SOURCE port/src/save_test_linux.c)
+    if(WL4_ARM64)
+        set(WL4_OS_SOURCE port/src/os_linux_arm64.c)
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+        set(WL4_OS_SOURCE port/src/os_linux.c)
+    else()
+        message(FATAL_ERROR "Linux builds are for x86-64 and AArch64")
+    endif()
     # Absolute GBA symbols require ET_EXEC. Place code and the randomized brk heap
     # above all GBA mappings so startup allocations cannot collide with the ROM.
     add_compile_options(-fno-pie)
@@ -29,23 +49,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x
         # which cannot be stored in the game's 32-bit DMA addresses.
         add_compile_options(-fsanitize-address-use-after-return=never)
     endif()
-    add_link_options(-no-pie -Wl,-z,noexecstack -Wl,-Ttext-segment=0x40000000)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
-        message(FATAL_ERROR "The Linux port currently requires Clang for -fms-volatile DMA ordering")
-    endif()
-    add_library(wl4_posix_files STATIC port/src/os_file_posix.c)
-    target_include_directories(wl4_posix_files PUBLIC port/include)
-    set(WL4_OS_SOURCE port/src/os_linux_arm64.c)
-    set(WL4_SAVE_TEST_SOURCE port/src/save_test_linux.c)
-    set(WL4_ARM64 ON)
-    add_compile_options(-fno-pie)
-    if(WL4_ASAN)
-        add_compile_options(-fsanitize-address-use-after-return=never)
-    endif()
-    add_link_options(-no-pie -Wl,-z,noexecstack -Wl,-Ttext-segment=0x40000000)
+    set(WL4_EXE_LINK_OPTIONS -no-pie -Wl,-z,noexecstack -Wl,-Ttext-segment=0x40000000)
 else()
-    message(FATAL_ERROR "Supported targets are Windows, Linux x86-64 and Linux AArch64")
+    message(FATAL_ERROR "Supported targets are Linux (x86-64, AArch64), Android and Windows (headless)")
 endif()
 
 if(WL4_ARM64)
@@ -53,8 +59,6 @@ if(WL4_ARM64)
 else()
     set(WL4_ACCESS_SOURCES port/src/x86_access.c)
 endif()
-
-
 
 # Game code: everything in src/ except the ROM data in src/data/, which the port reads from
 # the user's ROM. The function pointer tables there hold native addresses, so they are built.
@@ -116,99 +120,154 @@ add_library(wl4_platform_stub STATIC port/platform/stub/platform_stub.c)
 add_library(wl4_game_native OBJECT port/src/m4a_native.c port/src/rumble_snapshot.c port/src/tile_wrap_test.c)
 target_link_libraries(wl4_game_native PRIVATE wl4_game_flags)
 
-add_executable(wl4-rumble-event-test port/src/rumble_event_test.c port/src/rumble_snapshot.c)
-target_link_libraries(wl4-rumble-event-test PRIVATE wl4_game_flags)
+if(NOT ANDROID)
+    add_executable(wl4-rumble-event-test port/src/rumble_event_test.c port/src/rumble_snapshot.c)
+    target_link_libraries(wl4-rumble-event-test PRIVATE wl4_game_flags)
+    target_link_options(wl4-rumble-event-test PRIVATE ${WL4_EXE_LINK_OPTIONS})
+endif()
 
-# The port runtime and the executable. port/generated/gba_*.{c,s} come from
-# port/tools/gen_symbols.py: GBA addresses for the game's data, the function dispatch table,
-# and stubs for the functions that are still asm.
+# The port runtime: GBA memory, I/O, video, sound and BIOS. port/generated/gba_*.{c,s} come
+# from port/tools/gen_symbols.py: GBA addresses for the game's data, the function dispatch
+# table, and stubs for the functions that are still asm.
+set(WL4_SYMBOLS ${PROJECT_SOURCE_DIR}/port/generated/gba_symbols.s)
+if(ANDROID)
+    # Hidden, so that they resolve at link time with no dynamic relocations.
+    file(READ ${WL4_SYMBOLS} WL4_SYMBOLS_TEXT)
+    string(REGEX REPLACE "\\.globl ([A-Za-z0-9_]+)" ".globl \\1\n    .hidden \\1" WL4_SYMBOLS_TEXT "${WL4_SYMBOLS_TEXT}")
+    file(WRITE ${CMAKE_BINARY_DIR}/gba_symbols_hidden.s "${WL4_SYMBOLS_TEXT}")
+    set(WL4_SYMBOLS ${CMAKE_BINARY_DIR}/gba_symbols_hidden.s)
+endif()
 
-add_executable(wl4
-    port/src/main.c
+add_library(wl4_runtime STATIC
     port/src/audio.c
     port/src/game_thread.c
     port/src/bios.c
-    port/src/bios_test.c
     port/src/frame.c
     port/src/gba_functions.c
     port/src/gba_io.c
     port/src/gba_memory.c
     port/src/gba_runtime.c
-    port/src/input_script.c
-    port/src/io_test.c
     port/src/md5.c
-    ${WL4_OS_SOURCE}
     port/src/ppu.c
     port/src/rom_validate.c
-    port/src/rom.c
-    port/src/save.c
-    ${WL4_SAVE_TEST_SOURCE}
+    ${WL4_OS_SOURCE}
     ${WL4_ACCESS_SOURCES}
-    port/src/arm64_access_test.c
-    port/generated/gba_symbols.s
+    ${WL4_SYMBOLS}
     port/generated/gba_functions.c
     port/generated/gba_stubs.c
     port/generated/lz77_sources.c
-    $<TARGET_OBJECTS:wl4_game_native>
 )
-target_include_directories(wl4 PRIVATE port/include port/third_party/minicoro)
-if(TARGET wl4_posix_files)
-    target_link_libraries(wl4 PRIVATE wl4_posix_files)
-endif()
-
-# The SDL3 frontend (a window, input and pacing). Without SDL3, wl4 only runs headless. Point
-# SDL3_DIR at the SDL3 development package's lib/cmake/SDL3 directory, e.g. for the mingw
-# release: SDL3-<version>/x86_64-w64-mingw32/lib/cmake/SDL3.
-find_package(SDL3 CONFIG)
-if(SDL3_FOUND)
-    add_library(wl4_settings STATIC port/src/settings.c port/src/controls.c)
-    add_library(wl4_crt STATIC port/platform/sdl/crt.c)
-    target_include_directories(wl4_crt PUBLIC port/include)
-    target_link_libraries(wl4_crt PUBLIC SDL3::SDL3)
-    target_compile_options(wl4_crt PRIVATE -Wall -Wextra)
-    target_include_directories(wl4_settings PUBLIC port/include)
-    target_link_libraries(wl4_settings PUBLIC SDL3::SDL3)
-    if(TARGET wl4_posix_files)
-        target_link_libraries(wl4_settings PRIVATE wl4_posix_files)
-    endif()
-    target_compile_options(wl4_settings PRIVATE -Wall -Wextra)
-    target_sources(wl4 PRIVATE port/platform/sdl/sdl_frontend.c)
-    target_link_libraries(wl4 PRIVATE wl4_settings wl4_crt)
-    add_executable(wl4-crt-test port/src/crt_test.c)
-    target_link_libraries(wl4-crt-test PRIVATE wl4_crt)
-    add_executable(wl4-input-test port/src/settings_test.c)
-    target_link_libraries(wl4-input-test PRIVATE wl4_settings)
-    target_compile_definitions(wl4 PRIVATE $<$<COMPILE_LANGUAGE:C>:WL4_HAVE_SDL>)
-    target_link_libraries(wl4 PRIVATE SDL3::SDL3)
-    if(WIN32)
-        add_custom_command(TARGET wl4 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:wl4>)
-    endif()
-else()
-    message(STATUS "SDL3 not found: wl4 is built without its window (set SDL3_DIR)")
-endif()
+target_include_directories(wl4_runtime PUBLIC port/include PRIVATE port/third_party/minicoro)
 # gba_functions.c declares every game function as void(void) to take its address.
 set_source_files_properties(port/generated/gba_functions.c PROPERTIES COMPILE_OPTIONS -Wno-incompatible-library-redeclaration)
-target_link_libraries(wl4 PRIVATE wl4_game wl4_platform_stub)
-
-# Linux SDL3 launcher reuses the shared settings editor and platform ROM validator.
-# It starts the installed game through play.sh; no ROM data is linked into it.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SDL3_FOUND)
-    add_executable(wl4-launcher port/src/launcher_linux.c port/src/rom_validate.c
-        port/src/md5.c port/platform/sdl/settings_window.c)
-    target_include_directories(wl4-launcher PRIVATE port/include)
-    target_compile_options(wl4-launcher PRIVATE -Wall -Wextra)
-    target_link_libraries(wl4-launcher PRIVATE wl4_settings wl4_crt SDL3::SDL3)
+target_link_libraries(wl4_runtime PUBLIC wl4_game wl4_platform_stub)
+if(ANDROID)
+    target_link_libraries(wl4_runtime PUBLIC log)
 endif()
 
-# A separate Windows GUI; no ROM assets or game library are linked into it.
-if(WIN32 AND SDL3_FOUND)
-    enable_language(RC)
-    add_executable(wl4-launcher WIN32 port/src/launcher_win32.c port/src/rom_validate.c port/src/md5.c port/platform/sdl/settings_window.c port/launcher.rc)
-    target_include_directories(wl4-launcher PRIVATE port/include)
-    target_compile_definitions(wl4-launcher PRIVATE UNICODE _UNICODE)
-    target_compile_options(wl4-launcher PRIVATE -Wall -Wextra)
-    target_link_options(wl4-launcher PRIVATE -municode)
-    target_link_libraries(wl4-launcher PRIVATE wl4_settings wl4_crt comdlg32 advapi32 gdi32 dwmapi)
-    add_dependencies(wl4-launcher wl4)
+# The game's native pieces and the runtime reference each other.
+set(WL4_LINK $<TARGET_OBJECTS:wl4_game_native>)
+
+# wl4_headless: runs the game without a window, for tests and comparisons with mGBA.
+if(NOT ANDROID)
+    add_executable(wl4_headless
+        port/src/main.c
+        port/src/bios_test.c
+        port/src/input_script.c
+        port/src/io_test.c
+        port/src/rom.c
+        port/src/save.c
+        ${WL4_SAVE_TEST_SOURCE}
+        port/src/arm64_access_test.c
+        ${WL4_LINK}
+    )
+    target_include_directories(wl4_headless PRIVATE port/include port/third_party/minicoro)
+    target_link_libraries(wl4_headless PRIVATE wl4_runtime wl4_game wl4_runtime)
+    target_link_options(wl4_headless PRIVATE ${WL4_EXE_LINK_OPTIONS})
+    if(NOT WIN32)
+        target_sources(wl4_headless PRIVATE port/src/os_file_posix.c)
+    endif()
+endif()
+
+# The frontend's core (save states, saves, rumble) with a host that has no window, for tests.
+if(NOT ANDROID AND NOT WIN32)
+    add_executable(wl4_core_test
+        port/frontend/core.c
+        port/frontend/rumble.c
+        port/frontend/host_test.c
+        port/src/input_script.c
+        ${WL4_LINK})
+    target_include_directories(wl4_core_test PRIVATE port/frontend port/include)
+    target_compile_options(wl4_core_test PRIVATE -std=gnu11 -Wall -Wextra -Wno-unused-parameter)
+    target_link_libraries(wl4_core_test PRIVATE wl4_runtime wl4_game wl4_runtime m)
+    target_link_options(wl4_core_test PRIVATE ${WL4_EXE_LINK_OPTIONS})
+endif()
+
+# The game with its window, menu and touch controls (port/frontend): SDL3 and Dear ImGui.
+option(WL4_FRONTEND "Build the SDL3 frontend" ON)
+if(WL4_FRONTEND AND NOT WIN32)
+    if(NOT ANDROID)
+        find_package(SDL3 CONFIG QUIET)
+    endif()
+    include(FetchContent)
+    if(NOT TARGET SDL3::SDL3)
+        # No system SDL3 (always the case on Android): build it from source.
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+        set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        if(NOT ANDROID)
+            # Linked in, so the executable runs anywhere (AppImage, Steam Deck).
+            set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+            set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        endif()
+        FetchContent_Declare(SDL3
+            GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+            GIT_TAG ${WL4_SDL3_TAG}
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(SDL3)
+    endif()
+    enable_language(CXX)
+    FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG ${WL4_IMGUI_TAG}
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(imgui)
+    add_library(wl4_imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp)
+    target_include_directories(wl4_imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+    target_compile_definitions(wl4_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_DISABLE_DEMO_WINDOWS
+                                               IMGUI_DISABLE_DEBUG_TOOLS)
+    target_link_libraries(wl4_imgui PUBLIC SDL3::SDL3)
+
+    set(WL4_FRONTEND_SOURCES
+        port/frontend/core.c
+        port/frontend/host_sdl.c
+        port/frontend/config.c
+        port/frontend/pacing.c
+        port/frontend/rumble.c
+        port/frontend/menu.cpp
+        ${WL4_LINK})
+    if(ANDROID)
+        # SDLActivity loads libmain.so and calls its SDL_main, which loads the game
+        # (libgame.so) at a reserved address below 4 GiB and runs it.
+        add_library(game SHARED ${WL4_FRONTEND_SOURCES})
+        set(WL4_EXE game)
+        add_library(main SHARED port/frontend/android_launcher.c)
+        target_link_libraries(main PRIVATE dl log)
+        target_compile_definitions(main PRIVATE WL4_IMAGE_BASE=${WL4_IMAGE_BASE})
+        add_dependencies(main game)
+    else()
+        add_executable(wl4 ${WL4_FRONTEND_SOURCES})
+        set(WL4_EXE wl4)
+        target_link_options(wl4 PRIVATE ${WL4_EXE_LINK_OPTIONS})
+    endif()
+    target_include_directories(${WL4_EXE} PRIVATE port/frontend port/include)
+    target_compile_options(${WL4_EXE} PRIVATE $<$<COMPILE_LANGUAGE:C>:-std=gnu11> -Wall -Wextra -Wno-unused-parameter)
+    target_compile_features(${WL4_EXE} PRIVATE cxx_std_17)
+    target_link_libraries(${WL4_EXE} PRIVATE wl4_runtime wl4_game wl4_runtime wl4_imgui SDL3::SDL3 m)
 endif()

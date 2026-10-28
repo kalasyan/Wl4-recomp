@@ -1,4 +1,0 @@
-#!/bin/sh
-set -eu
-appdir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
-exec "$appdir/AppRun" "$@"

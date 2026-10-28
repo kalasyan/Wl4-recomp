@@ -103,9 +103,17 @@ void LZ77UnCompVram(const uint32_t *src, void *dest)
     }
 }
 
+static uintptr_t sHaltCaller;
+
+uintptr_t PortHaltCaller(void)
+{
+    return sHaltCaller;
+}
+
 void PlatformSyscall(int num)
 {
     if (num == SYSCALL_HALT && PortOnGameThread()) {
+        sHaltCaller = (uintptr_t)__builtin_return_address(0);
         // Halt sleeps until an enabled interrupt is requested, and the handler runs.
         PortFrameHalt();
         return;

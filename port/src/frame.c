@@ -1,4 +1,5 @@
 #include "port/frame.h"
+#include "port/state.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -43,17 +44,17 @@ static void (*const kInterruptTable[])(void) = {
     InterruptCallbackEmpty,       // keypad
 };
 
-static int sInInterrupt;
-static int sStarted;
-static int sWake;  // an enabled interrupt is requested: the halted game should resume
-static unsigned int sFrames;
+static PORT_STATE int sInInterrupt;
+static PORT_STATE int sStarted;
+static PORT_STATE int sWake;  // an enabled interrupt is requested: the halted game should resume
+static PORT_STATE unsigned int sFrames;
 
 // The main loop counts its steps in gMainTimer, and at the end of each one clears bit 0 of
 // gInterruptCheck and halts until the VBlank handler sets it again.
 extern volatile uint8_t gMainTimer;
 extern volatile uint16_t gInterruptCheck;
-static unsigned int sSteps;
-static uint8_t sLastStepTimer;
+static PORT_STATE unsigned int sSteps;
+static PORT_STATE uint8_t sLastStepTimer;
 
 static uint16_t Requested(void)
 {
