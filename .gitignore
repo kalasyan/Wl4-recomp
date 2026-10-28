@@ -1,0 +1,102 @@
+# IDE files
+.vscode
+
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+*.gba
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Build files
+build/**
+*.dump
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+# Game data
+data/**
+include/data/**
+
+# Python
+.venv
+__pycache__
+
+# m2ctx
+/ctx.c
+
+# leftovers files
+*.json
+*.tar.*
+*.tar
+*.py
+*.txt
+bundles/
+tools/
+decomp_work/
+decomp_work_v2/
+asm_cleaning*
+.asmclean_local/
+.asmclean_smart/
+*.json*
+.asmclean_autoapply
+experiments/
+# objdiff targets (made from the base ROM)
+expected/
+
+# PC port build; port/ keeps scripts that the rules above would ignore
+build_pc*/
+port/generated/failed_probe.c
+!port/tools/
+!port/**/*.py
+!CMakeLists.txt
+
+# Local builds and the player's files
+/build*/
+*.sav
+*.st
