@@ -69,10 +69,14 @@ static DWORD WINAPI ErrorDialogThread(LPVOID message)
     return 0;
 }
 
+static void (*sErrorSink)(const char *message);
+void PortOsSetErrorSink(void (*sink)(const char *message)) { sErrorSink = sink; }
+
 void PortOsWriteError(const char *message)
 {
     DWORD written;
 
+    if (sErrorSink) sErrorSink(message);
     WriteFile(GetStdHandle(STD_ERROR_HANDLE), message, (DWORD)strlen(message), &written, NULL);
     if (sShowErrors) {
         // From a thread of its own: a dialog on this thread would run the game window's

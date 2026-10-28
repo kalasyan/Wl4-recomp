@@ -42,9 +42,13 @@ void PortOsDescribeAddress(uintptr_t address, char *buffer, size_t size)
     snprintf(buffer, size, "fixed mmap failed: %s", strerror(reason));
 }
 void PortOsShowErrors(int show) { (void)show; } // Terminal diagnostics on Linux.
+static void (*sErrorSink)(const char *message);
+void PortOsSetErrorSink(void (*sink)(const char *message)) { sErrorSink = sink; }
+
 void PortOsWriteError(const char *message)
 {
     size_t remaining = strlen(message);
+    if (sErrorSink) sErrorSink(message);
     while (remaining) {
         ssize_t n = write(STDERR_FILENO, message, remaining);
         if (n < 0 && errno == EINTR) continue;
